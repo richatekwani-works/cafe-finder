@@ -1,0 +1,7 @@
+{
+  "name": "beanline-cafe-finder",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Find cafes near you. Static frontend + Vercel serverless API.",
+  "engines": { "node": ">=18" }
+}
