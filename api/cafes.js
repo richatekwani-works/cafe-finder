@@ -1,8 +1,4 @@
 
-// GET /api/cafes?lat=23.03&lng=72.58&r=2000
-// Returns { cafes, source, tried }
-// Uses Overpass.ch first, followed by public Overpass mirrors.
-
 const PUBLIC_MIRRORS = [
   {
     name: 'overpass.private.coffee',
@@ -27,15 +23,22 @@ const UA = process.env.CONTACT_EMAIL
   ? `BeanlineCafeFinder/1.0 (${APP_URL}; contact: ${process.env.CONTACT_EMAIL})`
   : `BeanlineCafeFinder/1.0 (${APP_URL})`;
 
-
 function sendError(res, status, error, tried = []) {
   res.setHeader('Cache-Control', 'no-store');
-  return res.status(status).json({ error, tried });
+
+  return res.status(status).json({
+    error,
+    tried
+  });
 }
 
 
 function parseCoordinate(value, min, max) {
-  if (value === undefined || value === null || value === '') {
+  if (
+    value === undefined ||
+    value === null ||
+    value === ''
+  ) {
     return null;
   }
 
@@ -52,10 +55,18 @@ function parseCoordinate(value, min, max) {
 function cafeFromElement(element) {
   const tags = element.tags || {};
 
-  const lat = Number(element.lat ?? element.center?.lat);
-  const lng = Number(element.lon ?? element.center?.lon);
+  const lat = Number(
+    element.lat ?? element.center?.lat
+  );
 
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+  const lng = Number(
+    element.lon ?? element.center?.lon
+  );
+
+  if (
+    !Number.isFinite(lat) ||
+    !Number.isFinite(lng)
+  ) {
     return null;
   }
 
@@ -64,22 +75,34 @@ function cafeFromElement(element) {
     name: tags.name || 'Unnamed cafe',
     lat,
     lng,
+
     hours: tags.opening_hours || '',
-    web: tags.website || tags['contact:website'] || '',
-    phone: tags.phone || tags['contact:phone'] || '',
+
+    web:
+      tags.website ||
+      tags['contact:website'] ||
+      '',
+
+    phone:
+      tags.phone ||
+      tags['contact:phone'] ||
+      '',
 
     addr: [
       tags['addr:housenumber'],
       tags['addr:street'],
       tags['addr:suburb'],
       tags['addr:city'] || tags['addr:town']
-    ].filter(Boolean).join(', '),
+    ]
+      .filter(Boolean)
+      .join(', '),
 
     wifi:
       tags.internet_access === 'wlan' ||
       tags.internet_access === 'yes',
 
-    outdoor: tags.outdoor_seating === 'yes'
+    outdoor:
+      tags.outdoor_seating === 'yes'
   };
 }
 
@@ -93,15 +116,26 @@ async function queryProvider(provider, query) {
   );
 
   try {
+    const headers = {
+      'Content-Type':
+        'application/x-www-form-urlencoded; charset=UTF-8',
+
+      'Accept': 'application/json',
+
+      'User-Agent': UA
+    };
+
+    // Send the Overpass.ch API key privately in a header.
+    // Do not put the key in the URL or frontend code.
+
+    if (provider.apiKey) {
+      headers['X-API-Key'] = provider.apiKey;
+    }
+
     const response = await fetch(provider.url, {
       method: 'POST',
 
-      headers: {
-        'Content-Type':
-          'application/x-www-form-urlencoded; charset=UTF-8',
-        Accept: 'application/json',
-        'User-Agent': UA
-      },
+      headers,
 
       body: `data=${encodeURIComponent(query)}`,
 
@@ -109,8 +143,12 @@ async function queryProvider(provider, query) {
     });
 
     if (!response.ok) {
-      const error = new Error(`HTTP ${response.status}`);
+      const error = new Error(
+        `HTTP ${response.status}`
+      );
+
       error.status = response.status;
+
       throw error;
     }
 
@@ -122,8 +160,13 @@ async function queryProvider(provider, query) {
       );
     }
 
-    if (!data || !Array.isArray(data.elements)) {
-      throw new Error('Invalid JSON response from Overpass');
+    if (
+      !data ||
+      !Array.isArray(data.elements)
+    ) {
+      throw new Error(
+        'Invalid JSON response from Overpass'
+      );
     }
 
     return data.elements
@@ -138,6 +181,8 @@ async function queryProvider(provider, query) {
 
 module.exports = async (req, res) => {
 
+  // Only allow GET requests.
+
   if (req.method !== 'GET') {
     res.setHeader('Allow', 'GET');
 
@@ -148,8 +193,20 @@ module.exports = async (req, res) => {
     );
   }
 
-  const lat = parseCoordinate(req.query.lat, -90, 90);
-  const lng = parseCoordinate(req.query.lng, -180, 180);
+
+  // Validate coordinates.
+
+  const lat = parseCoordinate(
+    req.query.lat,
+    -90,
+    90
+  );
+
+  const lng = parseCoordinate(
+    req.query.lng,
+    -180,
+    180
+  );
 
   if (lat === null || lng === null) {
     return sendError(
@@ -159,6 +216,8 @@ module.exports = async (req, res) => {
     );
   }
 
+
+  // Validate search radius.
 
   let radius = 2000;
 
@@ -176,8 +235,13 @@ module.exports = async (req, res) => {
     radius = requestedRadius;
   }
 
-  radius = Math.min(Math.max(radius, 300), 5000);
+  radius = Math.min(
+    Math.max(radius, 300),
+    5000
+  );
 
+
+  // Read API key from Vercel Environment Variables.
 
   const apiKey = String(
     process.env.OVERPASS_API_KEY || ''
@@ -187,24 +251,26 @@ module.exports = async (req, res) => {
     return sendError(
       res,
       500,
-      'Missing OVERPASS_API_KEY. Add your Overpass.ch API key in Vercel Environment Variables and redeploy.'
+      'Missing OVERPASS_API_KEY. Configure it in Vercel Environment Variables and redeploy.'
     );
   }
 
 
+  // Primary provider and fallback providers.
+
   const providers = [
     {
       name: 'overpass.ch',
-
-      url:
-        `https://api.overpass.ch/v1/${encodeURIComponent(apiKey)}/interpreter`,
-
+      url: 'https://api.overpass.ch/v1/interpreter',
+      apiKey,
       timeout: 9000
     },
 
     ...PUBLIC_MIRRORS
   ];
 
+
+  // Build Overpass query.
 
   const searchLat = Number(lat.toFixed(4));
   const searchLng = Number(lng.toFixed(4));
@@ -220,10 +286,15 @@ module.exports = async (req, res) => {
   const tried = [];
 
 
-  for (const provider of providers) {
-    try {
+  // Try providers one by one.
 
-      const cafes = await queryProvider(provider, query);
+  for (const provider of providers) {
+
+    try {
+      const cafes = await queryProvider(
+        provider,
+        query
+      );
 
       res.setHeader(
         'Cache-Control',
@@ -251,35 +322,43 @@ module.exports = async (req, res) => {
       );
 
 
+      // Stop if the Overpass.ch API key is invalid.
+
       if (
         provider.name === 'overpass.ch' &&
-        [401, 403, 404].includes(error.status)
+        [401, 403].includes(error.status)
       ) {
         return sendError(
           res,
           500,
-          'Overpass.ch rejected OVERPASS_API_KEY. Check the key in Vercel Environment Variables and redeploy.',
+          'Overpass.ch rejected the API key. Check OVERPASS_API_KEY in Vercel.',
           tried
         );
       }
 
 
-      if (
-        error.status === 429 ||
-        error.status === 406
-      ) {
-        res.setHeader('Retry-After', '30');
+      // Respect provider rate limits.
+
+      if (error.status === 429) {
+        res.setHeader(
+          'Retry-After',
+          '30'
+        );
 
         return sendError(
           res,
           503,
-          'Cafe data provider asked us to slow down. Try again in 30 seconds.',
+          'Cafe data provider rate limit reached. Please try again later.',
           tried
         );
       }
+
+      // Other errors move to the next provider.
     }
   }
 
+
+  // All providers failed.
 
   return sendError(
     res,
